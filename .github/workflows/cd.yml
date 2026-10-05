@@ -1,0 +1,96 @@
+# Continuous delivery. Runs only after CI passed on main (or on a version tag).
+#
+#   build  → multi-stage Docker image, pushed to GHCR, tagged with the commit SHA (+ semver on tags)
+#   scan   → vulnerability scan of the pushed image (fails on HIGH/CRITICAL with a fix available)
+#   deploy → STUBBED: prints the steps a real deployment would run. No cloud resources are touched.
+#
+# Deployment order matters for a zero-downtime rollout:
+#   1. run migrations (`node dist/migrate.js`, same image) as a one-shot job, expand-only schema changes
+#   2. roll the gateway: new pods must pass /readyz before old ones get SIGTERM; old pods drain
+#      streams for SHUTDOWN_DRAIN_TIMEOUT_MS (orchestrator grace period must be longer, see compose)
+name: cd
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false # never cancel a deployment half way
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    # For workflow_run, only continue if CI actually succeeded.
+    if: github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=long
+            type=semver,pattern={{version}}
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+  scan:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ needs.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+  deploy:
+    needs: [build, scan]
+    runs-on: ubuntu-24.04
+    environment: production # configure required reviewers on this environment
+    steps:
+      - name: Deploy (stub)
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          echo "STUB: no deployment target is configured for this reference implementation."
+          echo "A real pipeline would now:"
+          echo "  1. run migrations:   <platform> run-job --image ${IMAGE}@${DIGEST} -- node dist/migrate.js"
+          echo "  2. roll out gateway: <platform> deploy  --image ${IMAGE}@${DIGEST} --wait-for /readyz"
+          echo "  3. smoke test:       curl -fsS https://<host>/healthz"
+          echo "Secrets (JWT_PUBLIC_KEY, SERVICE_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY) come from the"
+          echo "platform's secret store, never from this repository."

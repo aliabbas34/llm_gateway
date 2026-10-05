@@ -1,0 +1,14 @@
+# Keep the build context small and secret-free.
+node_modules
+dist
+coverage
+load-test-results
+keys
+.env
+.env.*
+!.env.example
+.git
+.github
+docs
+test
+*.log

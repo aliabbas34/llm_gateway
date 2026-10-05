@@ -1,0 +1,107 @@
+# Continuous integration. Mirrors the package.json quality gates exactly:
+#   lint → format:check → typecheck → tests (unit, contract, integration, concurrency, e2e) with coverage.
+# Redis and Postgres run as service containers for the integration/e2e projects.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports: ['6380:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 20
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+          POSTGRES_DB: gateway
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd "pg_isready -U gateway" --health-interval 2s --health-timeout 2s --health-retries 20
+    env:
+      TEST_REDIS_URL: redis://localhost:6380
+      TEST_DATABASE_URL: postgres://gateway:gateway@localhost:5433/gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run test:coverage
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  # Packaging smoke test: the production image must migrate and boot against real dependencies.
+  # (Catches prod-only problems unit tests can't, e.g. a runtime dependency listed as dev-only.)
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports: ['6380:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 20
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+          POSTGRES_DB: gateway
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd "pg_isready -U gateway" --health-interval 2s --health-timeout 2s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --target runtime -t llm-gateway:ci .
+      - name: Migrate with the production image
+        run: >-
+          docker run --rm --network host
+          -e DATABASE_URL=postgres://gateway:gateway@localhost:5433/gateway
+          llm-gateway:ci node dist/migrate.js
+      - name: Boot and probe readiness
+        run: |
+          openssl genpkey -algorithm ed25519 -out key.pem
+          PUB="$(openssl pkey -in key.pem -pubout)"
+          docker run -d --name gw --network host \
+            -e REDIS_URL=redis://localhost:6380 \
+            -e DATABASE_URL=postgres://gateway:gateway@localhost:5433/gateway \
+            -e JWT_PUBLIC_KEY="$PUB" \
+            -e SERVICE_API_KEY=ci-smoke-service-key-0123456789abcdef \
+            -e FAKE_PROVIDER_BASE_URL=http://localhost:8090/v1 \
+            -e PRIMARY_MODEL=fake:ok -e FALLBACK_MODELS= \
+            llm-gateway:ci
+          for i in $(seq 1 30); do curl -fsS localhost:8080/readyz && break; sleep 1; done
+          curl -fsS localhost:8080/readyz
+          curl -fsS localhost:9464/metrics | grep -q gateway_http_requests_total
+      - name: Graceful stop exits 0
+        if: always()
+        run: |
+          docker stop gw
+          test "$(docker inspect gw --format '{{.State.ExitCode}}')" = "0"

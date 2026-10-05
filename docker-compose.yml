@@ -1,0 +1,92 @@
+# Local development dependencies.
+#   docker compose up -d                 → Redis + Postgres (enough for `npm run dev` and all tests)
+#   docker compose --profile app up -d   → also the gateway + fake provider in containers (P9)
+#
+# Host ports are deliberately non-default (6380, 5433) to avoid clashing with local installs.
+name: llm-gateway
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    # noeviction: budget keys must NEVER be evicted under memory pressure. An evicted budget key
+    #   would be re-initialised from the next token's token_budget, granting a fresh allowance.
+    # appendonly: budgets and reservations survive a Redis restart (fsync every second).
+    command:
+      [
+        'redis-server',
+        '--maxmemory-policy',
+        'noeviction',
+        '--appendonly',
+        'yes',
+        '--appendfsync',
+        'everysec',
+      ]
+    ports: ['6380:6379']
+    volumes: ['redis-data:/data']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: gateway
+    ports: ['5433:5432']
+    volumes: ['pg-data:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U gateway -d gateway']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # --- docker compose --profile app up --build ---------------------------------------------
+  migrate:
+    profiles: [app]
+    build: { context: ., target: runtime }
+    image: llm-gateway:local
+    command: ['node', 'dist/migrate.js']
+    environment:
+      DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  fake-provider:
+    profiles: [app]
+    build: { context: ., target: fake-provider }
+    image: llm-gateway-fake-provider:local
+    ports: ['8090:8090']
+
+  gateway:
+    profiles: [app]
+    build: { context: ., target: runtime }
+    image: llm-gateway:local
+    # Secrets (JWT_PUBLIC_KEY, SERVICE_API_KEY, provider keys) come from .env or the shell.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://gateway:gateway@postgres:5432/gateway
+      FAKE_PROVIDER_BASE_URL: http://fake-provider:8090/v1
+      # Defaults to the fake provider so the stack runs without provider keys.
+      PRIMARY_MODEL: ${PRIMARY_MODEL:-fake:ok?words=40&gap=25}
+      FALLBACK_MODELS: ${FALLBACK_MODELS:-}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-} # required; the gateway refuses to start without it
+      SERVICE_API_KEY: ${SERVICE_API_KEY:-} # required (>= 32 chars)
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+      SHUTDOWN_DRAIN_TIMEOUT_MS: ${SHUTDOWN_DRAIN_TIMEOUT_MS:-25000}
+    ports: ['8080:8080', '9464:9464']
+    # Longer than SHUTDOWN_DRAIN_TIMEOUT_MS (25 s), so Docker does not SIGKILL during the drain.
+    stop_grace_period: 40s
+    depends_on:
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+      fake-provider: { condition: service_started }
+
+volumes:
+  redis-data:
+  pg-data:
