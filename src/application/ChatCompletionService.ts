@@ -22,6 +22,7 @@ import type {
   UsageEntry,
 } from '../domain/types.js';
 import type { ChatSink } from './ChatSink.js';
+import type { CircuitBreakers, CircuitPermit } from './CircuitBreaker.js';
 import { buildProviderMessages } from './messagePolicy.js';
 import { ModelStreamer, type ModelRun } from './ModelStreamer.js';
 import { ReservationHandle } from './ReservationHandle.js';
@@ -56,6 +57,8 @@ export interface ChatResult {
   readonly failoverCount: number;
   /** Error kinds of the failed candidates, in order (for logs/metrics). */
   readonly failoverReasons: readonly ProviderErrorKind[];
+  /** Candidates not called at all because their circuit is open (ADR-0020). */
+  readonly skippedModels: number;
   readonly reservedTokens: number;
   /** Null unless this request settled its own reservation. */
   readonly chargedTokens: number | null;
@@ -76,6 +79,7 @@ export interface ChatCompletionDeps {
   readonly systemPrompt: string;
   readonly budget: BudgetStore;
   readonly usage: UsageRecorder;
+  readonly circuits: CircuitBreakers;
   readonly timeouts: StreamTimeouts & {
     /** Hard cap on the whole request, across failovers (ADR-0011). */
     readonly maxStreamDurationMs: number;
@@ -93,7 +97,8 @@ type SettleOutcome = SettleResult | { readonly status: 'failed'; readonly error:
  * when nothing was consumed); the finally is the safety net for anything unexpected.
  *
  * Failover (FR6): only before the first byte reaches the client, only to the configured fallback
- * models, and only for retryable failures (429 / 5xx / timeout / connection).
+ * models, and only for retryable failures (429 / 5xx / timeout / connection). A model whose
+ * circuit is open is skipped without waiting for it (ADR-0020).
  *
  * Ledger rule: whoever settles a reservation writes its ledger row. If our settle fails (Redis
  * down at the end), the sweeper settles it later and writes `expired_unreconciled`.
@@ -184,8 +189,19 @@ export class ChatCompletionService implements ChatCompletion {
     if (this.deps.models.length === 0) throw new Error('no models configured');
     const failed: ProviderError[] = [];
     let run: ModelRun | undefined;
+    let lastTried: ResolvedModel | undefined;
+    let skippedModels = 0;
+    let retryAfterMs: number | undefined;
 
     for (const model of this.deps.models) {
+      const circuit = this.deps.circuits.for(model.ref);
+      const permit = circuit.tryAcquire();
+      if (permit === undefined) {
+        skippedModels += 1;
+        retryAfterMs = Math.min(retryAfterMs ?? Infinity, circuit.retryAfterMs());
+        continue;
+      }
+      lastTried = model;
       const request: ProviderRequest = {
         model: model.ref.model,
         messages,
@@ -194,18 +210,30 @@ export class ChatCompletionService implements ChatCompletion {
       };
       try {
         run = await this.streamer.run(model, request, sink, signal, startedAt);
+        reportRun(permit, run, signal);
         break;
       } catch (err) {
         // Only a classified provider failure before commit lands here. Anything else is a bug:
         // let it propagate (the finally in complete() releases the reservation).
         if (!(err instanceof ProviderError)) throw err;
         failed.push(err);
+        if (err.retryable && !signal.aborted) permit.fail();
         if (!err.retryable || signal.aborted) break; // FR6: no failover for these
+      } finally {
+        permit.abandon(); // no-op once reported; frees a probe slot on any other exit
       }
     }
 
     if (run === undefined) {
-      return this.failBeforeFirstByte(input, inputTokens, reservation, failed, startedAt);
+      return this.failBeforeFirstByte(
+        input,
+        inputTokens,
+        reservation,
+        failed,
+        lastTried?.ref ?? null,
+        retryAfterMs,
+        startedAt,
+      );
     }
     if (run.outcome === 'shutdown_aborted' && !sink.opened) {
       return this.refuseForShutdown(input, inputTokens, reservation, run, failed, startedAt);
@@ -242,6 +270,7 @@ export class ChatCompletionService implements ChatCompletion {
       latencyMs: this.deps.clock.monotonicMs() - startedAt,
       failoverCount: failed.length,
       failoverReasons: failed.map((e) => e.kind),
+      skippedModels,
       reservedTokens: reservation.reservedTokens,
       chargedTokens: settled.status === 'settled' ? settled.chargedTokens : null,
       remainingTokens: settled.status === 'settled' ? settled.remainingTokens : null,
@@ -261,16 +290,17 @@ export class ChatCompletionService implements ChatCompletion {
     inputTokens: number,
     reservation: ReservationHandle,
     failed: readonly ProviderError[],
+    lastTried: ModelRef | null,
+    retryAfterMs: number | undefined,
     startedAt: number,
   ): Promise<never> {
     const last = failed.at(-1);
     const settled = await this.settle(() => reservation.release());
     if (settled.status === 'settled') {
-      const lastModel = this.deps.models[Math.max(0, failed.length - 1)]?.ref ?? null;
       this.deps.usage.record(
         this.ledgerEntry(input, {
           outcome: 'upstream_error',
-          model: lastModel,
+          model: lastTried,
           usage: { inputTokens, outputTokens: 0 },
           reservedTokens: reservation.reservedTokens,
           chargedTokens: 0,
@@ -281,8 +311,12 @@ export class ChatCompletionService implements ChatCompletion {
       );
     }
     throw new UpstreamUnavailableError(
-      `no model produced output (${failed.map((e) => `${e.provider}:${e.kind}`).join(', ')})`,
-      { cause: last },
+      `no model produced output (${failed.map((e) => `${e.provider}:${e.kind}`).join(', ') || 'all circuits open'})`,
+      {
+        cause: last,
+        // Some candidates were skipped: tell the client when one may be tried again.
+        ...(retryAfterMs !== undefined && { retryAfterSec: retryAfterMs / 1000 }),
+      },
     );
   }
 
@@ -374,5 +408,14 @@ export class ChatCompletionService implements ChatCompletion {
       ttftMs: r.ttftMs,
       failoverCount: r.failoverCount,
     };
+  }
+}
+
+/** Tell the circuit what a finished run says about the model's health. */
+function reportRun(permit: CircuitPermit, run: ModelRun, signal: AbortSignal): void {
+  if (run.outcome === 'completed') permit.succeed();
+  // A request-level abort (deadline, client, shutdown) is not the provider's failure.
+  if (run.outcome === 'stream_error' && run.error?.retryable === true && !signal.aborted) {
+    permit.fail();
   }
 }

@@ -3,6 +3,7 @@ import {
   ChatCompletionService,
   type ChatInput,
 } from '../../../src/application/ChatCompletionService.js';
+import { CircuitBreakers } from '../../../src/application/CircuitBreaker.js';
 import { UsageRecorder } from '../../../src/application/UsageRecorder.js';
 import {
   AttemptClosedError,
@@ -28,6 +29,7 @@ const charCounter: TokenCounter = {
 };
 
 const SYS = 'SYS';
+const CIRCUIT = { failureThreshold: 3, openMs: 30_000 };
 const TIMEOUTS = { ttftMs: 5_000, idleMs: 5_000, maxStreamDurationMs: 30_000 };
 const INPUT_TOKENS = SYS.length + 'hello'.length; // 8 with charCounter
 
@@ -42,6 +44,7 @@ function setup(script: FakeScript | LlmProvider = {}, budget = new InMemoryBudge
     systemPrompt: SYS,
     budget,
     usage: recorder,
+    circuits: new CircuitBreakers(new SystemClock(), CIRCUIT),
     timeouts: TIMEOUTS,
   });
   return { svc, provider, budget, ledger, recorder };
@@ -298,6 +301,7 @@ describe('ChatCompletionService: failure paths keep the reservation balanced', (
       systemPrompt: 'S',
       budget,
       usage: new UsageRecorder(new InMemoryUsageLedger(), () => undefined),
+      circuits: new CircuitBreakers(new SystemClock(), CIRCUIT),
       timeouts: TIMEOUTS,
     });
     await expect(svc.complete(input(), new RecordingSink(), never)).rejects.toThrow('no models');

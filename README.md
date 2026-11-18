@@ -16,17 +16,17 @@ budget as a **hard limit**, including under concurrency, disconnects and crashes
 
 ## Features
 
-|               |                                                                                                                                                                                                    |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| API           | `POST /v1/chat/completions` (OpenAI request shape, OpenAI-format SSE), `POST /v1/attempts/:id/close`, `/healthz`, `/readyz`, `/metrics` (port 9464)                                                |
-| Auth          | EdDSA (Ed25519) JWT per attempt, public key only; `aud`, `exp`, claim schema. Service key for close (constant-time compare).                                                                       |
-| Trust         | The client sends only `messages`; its `model` and `max_tokens` are ignored; system messages are dropped; the configured system prompt is prepended.                                                |
-| Limits        | 256 KB body, 100 messages, 32 000 chars per message; GCRA rate limits per IP (before auth) and per attempt (after auth) in Redis.                                                                  |
-| Budget        | Atomic Lua reserve (worst case) → provider capped at `max_tokens = effective` → reconcile `min(actual, reserved)`, idempotent. Crash recovery via an expiry index and a sweeper on every instance. |
-| Providers     | Groq (primary), Mistral (fallback), fake (tests, demo, load). Raw `fetch` over a dedicated undici pool, one contract test suite for all adapters.                                                  |
-| Failover      | Only before the first byte, only on 429 / 5xx / timeout / connection. After the first byte: SSE `error` event. TTFT, idle and max-duration timeouts.                                               |
-| Reliability   | Fails closed on Redis failure (503 + Retry-After); keeps serving when Postgres is down; graceful shutdown drains, then aborts and settles every stream.                                            |
-| Observability | pino JSON logs with request ids (never prompt or completion text, proven by a test); Prometheus metrics, including the gateway's own added latency.                                                |
+|               |                                                                                                                                                                                                                                                |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API           | `POST /v1/chat/completions` (OpenAI request shape, OpenAI-format SSE), `POST /v1/attempts/:id/close`, `/healthz`, `/readyz`, `/metrics` (port 9464)                                                                                            |
+| Auth          | EdDSA (Ed25519) JWT per attempt, public key only; `aud`, `exp`, claim schema. Service key for close (constant-time compare).                                                                                                                   |
+| Trust         | The client sends only `messages`; its `model` and `max_tokens` are ignored; system messages are dropped; the configured system prompt is prepended.                                                                                            |
+| Limits        | 256 KB body, 100 messages, 32 000 chars per message; GCRA rate limits per IP (before auth) and per attempt (after auth) in Redis.                                                                                                              |
+| Budget        | Atomic Lua reserve (worst case) → provider capped at `max_tokens = effective` → reconcile `min(actual, reserved)`, idempotent. Crash recovery via an expiry index and a sweeper on every instance.                                             |
+| Providers     | Groq (primary), Mistral (fallback), fake (tests, demo, load). Raw `fetch` over a dedicated undici pool, one contract test suite for all adapters.                                                                                              |
+| Failover      | Only before the first byte, only on 429 / 5xx / timeout / connection. After the first byte: SSE `error` event. TTFT, idle and max-duration timeouts. A circuit breaker skips a model that keeps failing, so later messages do not wait for it. |
+| Reliability   | Fails closed on Redis failure (503 + Retry-After); keeps serving when Postgres is down; graceful shutdown drains, then aborts and settles every stream.                                                                                        |
+| Observability | pino JSON logs with request ids (never prompt or completion text, proven by a test); Prometheus metrics, including the gateway's own added latency.                                                                                            |
 
 ## Quick start (local)
 

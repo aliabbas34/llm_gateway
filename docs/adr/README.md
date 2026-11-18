@@ -21,5 +21,6 @@
 | [0017](0017-failover-and-timeouts.md)                  | Failover and timeout semantics                                                  | accepted |
 | [0018](0018-graceful-shutdown.md)                      | Graceful shutdown sequence                                                      | accepted |
 | [0019](0019-dedicated-upstream-connection-pool.md)     | Provider calls use a dedicated undici connection pool                           | accepted |
+| [0020](0020-provider-circuit-breaker.md)               | Skip failing models with a per-instance circuit breaker                         | accepted |
 
 Format: Context → Decision → Consequences (→ Alternatives), see ADR-0001. ADRs are append-only.

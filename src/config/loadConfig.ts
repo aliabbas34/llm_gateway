@@ -45,6 +45,7 @@ export interface Config {
     readonly maxStreamDurationMs: number;
   };
   readonly sweeper: { readonly intervalMs: number; readonly batchSize: number };
+  readonly circuit: { readonly failureThreshold: number; readonly openMs: number };
   readonly streaming: {
     readonly ttftTimeoutMs: number;
     readonly idleTimeoutMs: number;
@@ -122,6 +123,7 @@ export function loadConfig(source: Readonly<Record<string, string | undefined>>)
       maxStreamDurationMs: e.MAX_STREAM_DURATION_MS,
     },
     sweeper: { intervalMs: e.SWEEPER_INTERVAL_MS, batchSize: e.SWEEPER_BATCH_SIZE },
+    circuit: { failureThreshold: e.CIRCUIT_FAILURE_THRESHOLD, openMs: e.CIRCUIT_OPEN_MS },
     streaming: {
       ttftTimeoutMs: e.PROVIDER_TTFT_TIMEOUT_MS,
       idleTimeoutMs: e.PROVIDER_IDLE_TIMEOUT_MS,

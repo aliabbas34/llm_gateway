@@ -128,6 +128,7 @@ describe('InstrumentedChatCompletion (decorator)', () => {
     latencyMs: 400,
     failoverCount: 1,
     failoverReasons: ['rate_limited'],
+    skippedModels: 0,
     reservedTokens: 100,
     chargedTokens: 15,
     remainingTokens: 85,

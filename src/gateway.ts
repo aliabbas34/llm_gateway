@@ -11,6 +11,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import type { Logger } from 'pino';
 import { AttemptService } from './application/AttemptService.js';
 import { ChatCompletionService } from './application/ChatCompletionService.js';
+import { CircuitBreakers } from './application/CircuitBreaker.js';
 import { DrainableChatCompletion } from './application/DrainableChatCompletion.js';
 import { HealthService } from './application/HealthService.js';
 import { Lifecycle } from './application/Lifecycle.js';
@@ -144,6 +145,12 @@ export async function createGateway(
     READINESS_CHECK_TIMEOUT_MS,
   );
 
+  const circuitValues = { closed: 0, half_open: 1, open: 2 } as const;
+  const circuits = new CircuitBreakers(clock, config.circuit, (ref, state) => {
+    metrics.circuitState.set(ref, circuitValues[state]);
+    logger.warn({ provider: ref.provider, model: ref.model, state }, 'model circuit changed');
+  });
+
   // Outermost decorator: draining refuses new work and tracks in-flight streams for shutdown.
   const chat = new DrainableChatCompletion(
     new InstrumentedChatCompletion(
@@ -154,6 +161,7 @@ export async function createGateway(
         systemPrompt: config.systemPrompt,
         budget,
         usage,
+        circuits,
         timeouts: {
           ttftMs: config.streaming.ttftTimeoutMs,
           idleMs: config.streaming.idleTimeoutMs,

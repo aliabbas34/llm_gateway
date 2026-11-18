@@ -1,5 +1,6 @@
 import { AttemptService } from '../../src/application/AttemptService.js';
 import { ChatCompletionService } from '../../src/application/ChatCompletionService.js';
+import { CircuitBreakers } from '../../src/application/CircuitBreaker.js';
 import { UsageRecorder } from '../../src/application/UsageRecorder.js';
 import { HealthService } from '../../src/application/HealthService.js';
 import { Lifecycle } from '../../src/application/Lifecycle.js';
@@ -80,6 +81,7 @@ export async function buildTestApp(opts: TestAppOptions = {}): Promise<TestApp> 
       systemPrompt: config.systemPrompt,
       budget,
       usage: recorder,
+      circuits: new CircuitBreakers(new SystemClock(), config.circuit),
       timeouts: {
         ttftMs: config.streaming.ttftTimeoutMs,
         idleMs: config.streaming.idleTimeoutMs,
