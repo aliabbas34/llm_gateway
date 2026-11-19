@@ -3,6 +3,7 @@ import {
   ChatCompletionService,
   type ChatInput,
 } from '../../../src/application/ChatCompletionService.js';
+import { CircuitBreakers } from '../../../src/application/CircuitBreaker.js';
 import { UsageRecorder } from '../../../src/application/UsageRecorder.js';
 import {
   AttemptClosedError,
@@ -28,6 +29,7 @@ const charCounter: TokenCounter = {
 };
 
 const SYS = 'SYS';
+const CIRCUIT = { failureThreshold: 3, openMs: 30_000 };
 const TIMEOUTS = { ttftMs: 5_000, idleMs: 5_000, maxStreamDurationMs: 30_000 };
 const INPUT_TOKENS = SYS.length + 'hello'.length; // 8 with charCounter
 
@@ -42,6 +44,7 @@ function setup(script: FakeScript | LlmProvider = {}, budget = new InMemoryBudge
     systemPrompt: SYS,
     budget,
     usage: recorder,
+    circuits: new CircuitBreakers(new SystemClock(), CIRCUIT),
     timeouts: TIMEOUTS,
   });
   return { svc, provider, budget, ledger, recorder };
@@ -298,6 +301,7 @@ describe('ChatCompletionService: failure paths keep the reservation balanced', (
       systemPrompt: 'S',
       budget,
       usage: new UsageRecorder(new InMemoryUsageLedger(), () => undefined),
+      circuits: new CircuitBreakers(new SystemClock(), CIRCUIT),
       timeouts: TIMEOUTS,
     });
     await expect(svc.complete(input(), new RecordingSink(), never)).rejects.toThrow('no models');
@@ -348,7 +352,9 @@ describe('ChatCompletionService: added latency (NFR3 measurement)', () => {
   it('= pipeline time + (TTFT − the provider own TTFT): a slow provider does not count', async () => {
     const { svc } = setup({ firstChunkDelayMs: 120, deltas: ['a'] });
     const result = await svc.complete({ ...input(), pipelineMs: 7 }, new RecordingSink(), never);
-    expect(result.ttftMs).toBeGreaterThanOrEqual(120);
+    // Timers can fire a fraction of a millisecond before performance.now() shows the full delay
+    // (CI measured 119.95 ms for a 120 ms timer), so allow a small tolerance.
+    expect(result.ttftMs).toBeGreaterThanOrEqual(110);
     expect(result.addedLatencyMs).toBeGreaterThanOrEqual(7);
     expect(result.addedLatencyMs).toBeLessThan(7 + 40); // the 120 ms provider delay is excluded
   });

@@ -7,6 +7,7 @@ import {
   ChatCompletionService,
   type ChatInput,
 } from '../../../src/application/ChatCompletionService.js';
+import { CircuitBreakers } from '../../../src/application/CircuitBreaker.js';
 import { UsageRecorder } from '../../../src/application/UsageRecorder.js';
 import { UpstreamUnavailableError } from '../../../src/domain/errors.js';
 import type { ProviderErrorKind } from '../../../src/domain/providerErrors.js';
@@ -48,6 +49,7 @@ function setup(
     systemPrompt: 'S',
     budget,
     usage: recorder,
+    circuits: new CircuitBreakers(new SystemClock(), { failureThreshold: 3, openMs: 30_000 }),
     timeouts,
   });
   return { svc, providers, budget, ledger, recorder };

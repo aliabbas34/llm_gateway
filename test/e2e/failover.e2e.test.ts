@@ -89,6 +89,29 @@ describe('failover (FR6, e2e)', () => {
     );
   });
 
+  it('after repeated hangs the primary is skipped, so later messages do not wait for it', async () => {
+    await withGateway(
+      {
+        PRIMARY_MODEL: 'fake:hang-headers',
+        FALLBACK_MODELS: 'fake:ok',
+        PROVIDER_TTFT_TIMEOUT_MS: '300',
+        CIRCUIT_FAILURE_THRESHOLD: '2',
+      },
+      async (g) => {
+        await chat(g);
+        await chat(g);
+        const started = Date.now();
+        const res = await chat(g);
+        expect(res.status).toBe(200);
+        expect(Date.now() - started).toBeLessThan(300);
+        expect(g.upstream.requests.filter((r) => r.model === 'hang-headers')).toHaveLength(2);
+        expect(await g.gateway.metrics.registry.metrics()).toContain(
+          'gateway_circuit_state{provider="fake",model="hang-headers"} 2',
+        );
+      },
+    );
+  });
+
   it('a non-retryable 400 does not fail over → 502 JSON, fallback never called', async () => {
     await withGateway(
       { PRIMARY_MODEL: 'fake:status-400', FALLBACK_MODELS: 'fake:ok' },

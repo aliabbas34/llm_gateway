@@ -141,6 +141,10 @@ sequenceDiagram
   end
 ```
 
+A per-model circuit breaker sits in front of this flow (ADR-0020). After 3 consecutive provider
+failures the model is skipped for 30 s, then one request probes it. If every model is skipped, the
+gateway answers 502 with Retry-After immediately.
+
 ## 6. Budget: reserve, reconcile, and crash recovery
 
 ```mermaid

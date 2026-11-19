@@ -132,6 +132,12 @@ const envObject = z.object({
   /** A client that does not drain its socket for this long is disconnected (slow consumer). */
   SSE_WRITE_TIMEOUT_MS: positiveInt.default(30_000),
 
+  // --- Circuit breaker (ADR-0020) ------------------------------------------------
+  /** Consecutive provider failures before a model is skipped. */
+  CIRCUIT_FAILURE_THRESHOLD: positiveInt.default(3),
+  /** How long a failing model is skipped before one request probes it again. */
+  CIRCUIT_OPEN_MS: positiveInt.default(30_000),
+
   // --- Sweeper (crash recovery, ADR-0005) ------------------------------------------
   SWEEPER_INTERVAL_MS: positiveInt.default(15_000),
   SWEEPER_BATCH_SIZE: positiveInt.max(10_000).default(200),

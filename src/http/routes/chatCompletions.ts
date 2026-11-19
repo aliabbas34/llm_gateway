@@ -64,6 +64,7 @@ export function registerChatRoutes(app: GatewayApp, deps: ChatRouteDeps): void {
             latency_ms: Math.round(result.latencyMs),
             failover_count: result.failoverCount,
             failover_reasons: result.failoverReasons,
+            skipped_models: result.skippedModels,
             reserved_tokens: result.reservedTokens,
             charged_tokens: result.chargedTokens,
             remaining_tokens: result.remainingTokens,

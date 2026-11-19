@@ -93,6 +93,12 @@ export function createMetrics(options: { defaultMetrics?: boolean } = {}) {
       help: 'Expired reservations claimed and charged in full by the sweeper.',
       registers: [registry],
     }),
+    circuitState: new Gauge({
+      name: 'gateway_circuit_state',
+      help: 'Circuit per configured model: 0 = closed, 1 = half-open, 2 = open (skipped).',
+      labelNames: ['provider', 'model'] as const,
+      registers: [registry],
+    }),
     sweeperErrors: new Counter({
       name: 'gateway_sweeper_errors_total',
       help: 'Sweep passes that failed (e.g. Redis unavailable).',
