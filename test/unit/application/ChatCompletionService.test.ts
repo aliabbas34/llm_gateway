@@ -352,7 +352,9 @@ describe('ChatCompletionService: added latency (NFR3 measurement)', () => {
   it('= pipeline time + (TTFT − the provider own TTFT): a slow provider does not count', async () => {
     const { svc } = setup({ firstChunkDelayMs: 120, deltas: ['a'] });
     const result = await svc.complete({ ...input(), pipelineMs: 7 }, new RecordingSink(), never);
-    expect(result.ttftMs).toBeGreaterThanOrEqual(120);
+    // Timers can fire a fraction of a millisecond before performance.now() shows the full delay
+    // (CI measured 119.95 ms for a 120 ms timer), so allow a small tolerance.
+    expect(result.ttftMs).toBeGreaterThanOrEqual(110);
     expect(result.addedLatencyMs).toBeGreaterThanOrEqual(7);
     expect(result.addedLatencyMs).toBeLessThan(7 + 40); // the 120 ms provider delay is excluded
   });
